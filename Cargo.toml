@@ -4,3 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+anyhow = "1.0.86"
+chrono = "0.4.38"
+clap = { version = "4.5.4", features = ["derive"] }
+lazy_static = "1.4.0"
+reqwest = { version = "0.12.4", features = ["json", "rustls-tls"] }
+serde = { version = "1.0.202", features = ["derive"] }
+serde_json = "1.0.117"
+tokio = { version = "1.37.0", features = ["full"] }
+tokio-util = { version = "0.7.11", features = ["full"] }
+url = "2.5.0"
