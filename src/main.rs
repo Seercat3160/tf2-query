@@ -62,6 +62,14 @@ async fn main() -> anyhow::Result<()> {
     } else {
         eprintln!("getting server list from API...");
 
+        // This could be done better, like some proper structured representation from which the filter string can be constructed
+        // See https://github.com/MegaAntiCheat/masterbase/blob/64ada88eff0d398ae229a44db2eeb8a31f00b126/masterbase/steam.py#L51
+        let filter_string = if args.valve {
+            "appid\\440\\gametype\\valve"
+        } else {
+            "appid\\440\\"
+        };
+
         let req = reqwest_client
             .get(STEAM_API_URL.join("/IGameServersService/GetServerList/v1")?)
             .query(&[
@@ -73,8 +81,8 @@ async fn main() -> anyhow::Result<()> {
                     "input_json",
                     json!(
                         {
-                            "filter": "appid\\440",
-                            "limit": 100000
+                            "filter": filter_string,
+                            "limit": 100000 // arbitrary large number to get all servers, there doesn't seem to be any pagination
                         }
                     )
                     .to_string(),
@@ -121,26 +129,32 @@ async fn main() -> anyhow::Result<()> {
         servers.push(server);
     }
 
-    let fewer_servers = servers.iter().filter(|server| {
-        server.tags.contains(&"valve".to_string()) // TODO: use the filter options of the Steam API to do these things
-            && server.players > 0
-            && server.name.contains("Sydney") // this could probably be improved, and is just a quick hack for testing
-    });
+    // let fewer_servers = servers.iter().filter(|server| {
+    //     server.tags.contains(&"valve".to_string()) // TODO: use the filter options of the Steam API to do these things
+    //         && server.players > 0
+    //         && server.name.contains("Sydney") // this could probably be improved, and is just a quick hack for testing
+    // });
+
+    let fewer_servers = servers.iter().filter(|server| server.players > 0);
 
     let mut interval = tokio::time::interval(Duration::from_secs(5));
 
     for server in fewer_servers {
-        select! {
-            _ = should_loop_exit.cancelled() => break,
-            _ = interval.tick() => {}
-        }
-
-        // print the current time in UTC
-        eprintln!("time: {}", chrono::Utc::now());
-
         println!("{server:#?}");
 
+        if should_loop_exit.is_cancelled() {
+            break;
+        }
+
         if args.get_players {
+            select! {
+                _ = should_loop_exit.cancelled() => break,
+                _ = interval.tick() => {}
+            }
+
+            // print the current time in UTC
+            eprintln!("time: {}", chrono::Utc::now());
+
             let players =
                 do_fakeip_players_query(server.ip, server.port, reqwest_client.clone()).await?;
 
@@ -170,7 +184,7 @@ async fn do_fakeip_players_query(
                 "input_json",
                 json!(
                     {
-                        "fake_ip": fakeip_to_int(ip).ok_or(anyhow!("IP must be IPv4"))?, // TODO: investigate IPv6 support
+                        "fake_ip": fakeip_to_int(ip).ok_or(anyhow!("FakeIP must be IPv4"))?, // I don't think actual Valve FakeIPs can be IPv6
                         "fake_port": port,
                         "app_id": 440,
                         "query_type": 2
@@ -180,21 +194,12 @@ async fn do_fakeip_players_query(
             ),
         ]);
 
-    // eprintln!("requesting player list...");
-
     let res = req.send().await?;
-
-    // let status = res.status();
-    // eprintln!("status: {status:#}");
-
-    // let headers = res.headers();
-    // eprintln!("headers: {headers:#?}");
 
     let text = &res.text().await?;
 
     let response: serde_json::Value = serde_json::from_str(text)?;
 
-    // let parse_players = || -> anyhow::Result<Vec<Player>> {
     let players: Vec<Player> = serde_json::from_value(
         response
             .get("response")
@@ -207,14 +212,6 @@ async fn do_fakeip_players_query(
     )?;
 
     Ok(players)
-    // }()?
-
-    // match parse_players {
-    //     Ok(p) => return Ok(p),
-    //     Err(e) => {
-    //         eprintln!("error parsing player data: {e}");
-    //     }
-    // };
 }
 
 #[derive(clap::Parser)]
@@ -226,6 +223,10 @@ struct Args {
     /// Query each server for it's online players
     #[clap(long)]
     get_players: bool,
+
+    /// Filter for only Valve servers
+    #[clap(long)]
+    valve: bool,
 
     #[clap(subcommand)]
     subcommand: Option<Subcommands>,
