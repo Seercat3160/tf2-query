@@ -65,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
         // This could be done better, like some proper structured representation from which the filter string can be constructed
         // See https://github.com/MegaAntiCheat/masterbase/blob/64ada88eff0d398ae229a44db2eeb8a31f00b126/masterbase/steam.py#L51
         let filter_string = if args.valve {
-            "appid\\440\\gametype\\valve"
+            "appid\\440\\gametype\\valve\\name_match\\Valve Matchmaking Server *\\secure\\1\\linux\\1"
         } else {
             "appid\\440\\"
         };
