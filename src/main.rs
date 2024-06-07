@@ -140,13 +140,15 @@ async fn main() -> anyhow::Result<()> {
 
         println!("{server:#?}");
 
-        let players =
-            do_fakeip_players_query(server.ip, server.port, reqwest_client.clone()).await?;
+        if args.get_players {
+            let players =
+                do_fakeip_players_query(server.ip, server.port, reqwest_client.clone()).await?;
 
-        eprintln!(
-            "players: {:?}",
-            players.iter().map(|x| { &x.name }).collect::<Vec<_>>()
-        );
+            eprintln!(
+                "players: {:?}",
+                players.iter().map(|x| { &x.name }).collect::<Vec<_>>()
+            );
+        }
     }
 
     Ok(())
@@ -220,6 +222,10 @@ struct Args {
     /// Read from JSON file rather than performing an API call for the list of servers
     #[clap(long)]
     from_file: Option<PathBuf>,
+
+    /// Query each server for it's online players
+    #[clap(long)]
+    get_players: bool,
 
     #[clap(subcommand)]
     subcommand: Option<Subcommands>,
