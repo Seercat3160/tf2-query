@@ -1,5 +1,6 @@
 use std::net::IpAddr;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use anyhow::anyhow;
 use clap::Parser;
@@ -82,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
                     json!(
                         {
                             "filter": filter_string,
-                            "limit": 100000 // arbitrary large number to get all servers, there doesn't seem to be any pagination
+                            "limit": 100000 // arbitrary large number to hopefully get all servers, there doesn't seem to be any pagination
                         }
                     )
                     .to_string(),
@@ -362,6 +363,98 @@ fn fakeip_to_int(ip: IpAddr) -> Option<u32> {
             Some(ip_integer)
         }
         IpAddr::V6(_) => None,
+    }
+}
+
+/// Information about an official TF2 server (Casual, Competitive, MvM, etc) determined by parsing it's name.
+/// Field names are all guesses as to what the different parts mean.
+struct ValveServerLocation {
+    region: ValveMatchmakingRegion,
+    /// Point-of-Presence.
+    /// In the form `xxxn` where `xxx` seems to correspond to `region` and `n` is the datacenter number.
+    /// Generally one per region but can be multiple in some cases e.g. LA has lax1 and lax2.
+    /// Seems to be similar to those returned by https://api.steampowered.com/ISteamApps/GetSDRConfig/v1/?appid=440
+    /// Note: use `jq '.pops | with_entries({ key: .key, value: .value.desc })'` on that endpoint
+    pop: String,
+    /// I don't really know what this is.
+    /// It doesn't seem to be unique to a region. That is, there can be servers with this the same across multiple regions.
+    /// It's in the form `srcds` and then some digits.
+    cluster: String,
+    /// I don't really know what this is either.
+    instance: String,
+}
+
+/// The region/city name found in the hostname of official Valve Matchmaking Servers.
+/// Non-exhaustive because these are the only ones I've seen be returned but there could be others.
+#[non_exhaustive]
+enum ValveMatchmakingRegion {
+    Brazil,
+    Chennai,
+    Chile,
+    Dubai,
+    Frankfurt,
+    HongKong,
+    Johannesburg,
+    LA,
+    Madrid,
+    Mumbai,
+    Peru,
+    Singapore,
+    Stockholm,
+    Sydney,
+    Tokyo,
+    Virginia,
+    Washington,
+}
+
+impl From<ValveMatchmakingRegion> for &str {
+    fn from(region: ValveMatchmakingRegion) -> Self {
+        match region {
+            ValveMatchmakingRegion::Brazil => "Brazil",
+            ValveMatchmakingRegion::Chennai => "Chennai",
+            ValveMatchmakingRegion::Chile => "Chile",
+            ValveMatchmakingRegion::Dubai => "Dubai",
+            ValveMatchmakingRegion::Frankfurt => "Frankfurt",
+            ValveMatchmakingRegion::HongKong => "Hong Kong",
+            ValveMatchmakingRegion::Johannesburg => "Johannesburg",
+            ValveMatchmakingRegion::LA => "LA",
+            ValveMatchmakingRegion::Madrid => "Madrid",
+            ValveMatchmakingRegion::Mumbai => "Mumbai",
+            ValveMatchmakingRegion::Peru => "Peru",
+            ValveMatchmakingRegion::Singapore => "Singapore",
+            ValveMatchmakingRegion::Stockholm => "Stockholm",
+            ValveMatchmakingRegion::Sydney => "Sydney",
+            ValveMatchmakingRegion::Tokyo => "Tokyo",
+            ValveMatchmakingRegion::Virginia => "Virginia",
+            ValveMatchmakingRegion::Washington => "Washington",
+        }
+    }
+}
+
+impl FromStr for ValveMatchmakingRegion {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "Brazil" => Ok(ValveMatchmakingRegion::Brazil),
+            "Chennai" => Ok(ValveMatchmakingRegion::Chennai),
+            "Chile" => Ok(ValveMatchmakingRegion::Chile),
+            "Dubai" => Ok(ValveMatchmakingRegion::Dubai),
+            "Frankfurt" => Ok(ValveMatchmakingRegion::Frankfurt),
+            "Hong Kong" => Ok(ValveMatchmakingRegion::HongKong),
+            "Johannesburg" => Ok(ValveMatchmakingRegion::Johannesburg),
+            "LA" => Ok(ValveMatchmakingRegion::LA),
+            "Madrid" => Ok(ValveMatchmakingRegion::Madrid),
+            "Mumbai" => Ok(ValveMatchmakingRegion::Mumbai),
+            "Peru" => Ok(ValveMatchmakingRegion::Peru),
+            "Singapore" => Ok(ValveMatchmakingRegion::Singapore),
+            "Stockholm" => Ok(ValveMatchmakingRegion::Stockholm),
+            "Sydney" => Ok(ValveMatchmakingRegion::Sydney),
+            "Tokyo" => Ok(ValveMatchmakingRegion::Tokyo),
+            "Virginia" => Ok(ValveMatchmakingRegion::Virginia),
+            "Washington" => Ok(ValveMatchmakingRegion::Washington),
+            _ => Err(anyhow!("unknown region: {s}")),
+        }
     }
 }
 
