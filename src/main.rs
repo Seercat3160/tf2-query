@@ -1,3 +1,4 @@
+use std::fmt::{Display, Formatter};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -5,6 +6,7 @@ use std::str::FromStr;
 use anyhow::anyhow;
 use clap::Parser;
 use lazy_static::lazy_static;
+use regex::Regex;
 use serde::Deserialize;
 use serde_json::json;
 use tokio::select;
@@ -95,12 +97,6 @@ async fn main() -> anyhow::Result<()> {
 
         let res = req.send().await?;
 
-        // let status = res.status();
-        // eprintln!("status: {status:#}");
-
-        // let headers = res.headers();
-        // eprintln!("headers: {headers:#?}");
-
         let text = &res.text().await?;
 
         response = serde_json::from_str(text)?;
@@ -130,15 +126,56 @@ async fn main() -> anyhow::Result<()> {
         servers.push(server);
     }
 
-    // let fewer_servers = servers.iter().filter(|server| {
-    //     server.tags.contains(&"valve".to_string()) // TODO: use the filter options of the Steam API to do these things
-    //         && server.players > 0
-    //         && server.name.contains("Sydney") // this could probably be improved, and is just a quick hack for testing
-    // });
+    let fewer_servers = servers
+        .iter()
+        .filter(|server| {
+            if args.has_players {
+                server.players > 0
+            } else {
+                true
+            }
+        })
+        .filter(|server| {
+            // if it has `valve` in the tags, make sure it has valid valve server location data, and if we're filtering for valve servers, make sure it's all good
+            if server.tags.contains(&"valve".to_string()) {
+                match &server.valve_server_location {
+                    Some(valve_server_location) => {
+                        // check filters based on this data
+                        if args.valve {
+                            if let Some(region) = &args.valve_region {
+                                if region != &valve_server_location.region {
+                                    return false;
+                                }
+                            }
+                            if let Some(cluster) = &args.valve_cluster {
+                                if cluster != &valve_server_location.cluster {
+                                    return false;
+                                }
+                            }
+                            if let Some(pop) = &args.valve_pop {
+                                if pop != &valve_server_location.pop {
+                                    return false;
+                                }
+                            }
+                            if let Some(instance) = &args.valve_instance {
+                                if instance != &valve_server_location.instance {
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        if args.valve {
+                            // most likely not actually a valve server, just ignore it
+                            return false;
+                        }
+                    }
+                }
+            }
+            true
+        });
 
-    let fewer_servers = servers.iter().filter(|server| server.players > 0);
-
-    let mut interval = tokio::time::interval(Duration::from_secs(5));
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
 
     for server in fewer_servers {
         println!("{server:#?}");
@@ -154,12 +191,12 @@ async fn main() -> anyhow::Result<()> {
             }
 
             // print the current time in UTC
-            eprintln!("time: {}", chrono::Utc::now());
+            // eprintln!("time: {}", chrono::Utc::now());
 
             let players =
                 do_fakeip_players_query(server.ip, server.port, reqwest_client.clone()).await?;
 
-            eprintln!(
+            println!(
                 "players: {:?}",
                 players.iter().map(|x| { &x.name }).collect::<Vec<_>>()
             );
@@ -225,9 +262,29 @@ struct Args {
     #[clap(long)]
     get_players: bool,
 
+    /// Filter for only servers with online players
+    #[clap(long)]
+    has_players: bool,
+
     /// Filter for only Valve servers
     #[clap(long)]
     valve: bool,
+
+    /// Filter: only Valve servers with the given region. Requires `--valve`.
+    #[clap(long)]
+    valve_region: Option<ValveMatchmakingRegion>,
+
+    /// Filter: only Valve servers with the given cluster. Requires `--valve`.
+    #[clap(long)]
+    valve_cluster: Option<i32>,
+
+    /// Filter: only Valve servers with the given PoP. Requires `--valve`.
+    #[clap(long)]
+    valve_pop: Option<String>,
+
+    /// Filter: only Valve servers with the given instance number. Requires `--valve`.
+    #[clap(long)]
+    valve_instance: Option<i32>,
 
     #[clap(subcommand)]
     subcommand: Option<Subcommands>,
@@ -281,6 +338,7 @@ struct Server {
     bots: i32,
     map: String,
     tags: Vec<String>,
+    valve_server_location: Option<ValveServerLocation>,
 }
 
 impl TryFrom<RawServer> for Server {
@@ -296,6 +354,7 @@ impl TryFrom<RawServer> for Server {
                 // convert from form `127.0.0.1:8080` to `127.0.0.1` by getting part before the last colon and parsing
                 ip: ip_without_port.parse()?,
                 port: server.gameport,
+                valve_server_location: server.name.clone().parse::<ValveServerLocation>().ok(),
                 name: server.name,
                 region: server.region.into(),
                 players: server.players,
@@ -368,6 +427,7 @@ fn fakeip_to_int(ip: IpAddr) -> Option<u32> {
 
 /// Information about an official TF2 server (Casual, Competitive, MvM, etc) determined by parsing it's name.
 /// Field names are all guesses as to what the different parts mean.
+#[derive(Debug, PartialEq, Eq)]
 struct ValveServerLocation {
     region: ValveMatchmakingRegion,
     /// Point-of-Presence.
@@ -378,15 +438,50 @@ struct ValveServerLocation {
     pop: String,
     /// I don't really know what this is.
     /// It doesn't seem to be unique to a region. That is, there can be servers with this the same across multiple regions.
-    /// It's in the form `srcds` and then some digits.
-    cluster: String,
+    /// It's the digits after `srcds`
+    cluster: i32,
     /// I don't really know what this is either.
-    instance: String,
+    /// It's the digits after `#` at the end.
+    instance: i32,
+}
+
+impl FromStr for ValveServerLocation {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match VALVE_SERVER_LOCATION_REGEX.captures(s) {
+            Some(captures) => Ok(ValveServerLocation {
+                region: captures.get(1).unwrap().as_str().parse()?,
+                pop: captures.get(3).unwrap().as_str().into(),
+                cluster: captures.get(2).unwrap().as_str().parse()?,
+                instance: captures.get(4).unwrap().as_str().parse()?,
+            }),
+            None => Err(anyhow!(
+                "couldn't parse server name into ValveServerLocation: {s}"
+            )),
+        }
+    }
+}
+
+impl Display for ValveServerLocation {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} srcds{}-{} #{}",
+            self.region, self.cluster, self.pop, self.instance
+        )
+    }
+}
+
+lazy_static! {
+    static ref VALVE_SERVER_LOCATION_REGEX: Regex =
+        regex::Regex::new(r"^Valve Matchmaking Server \(([[:alpha:] ]+) srcds([[:digit:]]+)-([[:lower:]]{3}[[:digit:]]+) #([[:digit:]]+)\)$").expect("regex should be valid");
 }
 
 /// The region/city name found in the hostname of official Valve Matchmaking Servers.
 /// Non-exhaustive because these are the only ones I've seen be returned but there could be others.
 #[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ValveMatchmakingRegion {
     Brazil,
     Chennai,
@@ -407,26 +502,26 @@ enum ValveMatchmakingRegion {
     Washington,
 }
 
-impl From<ValveMatchmakingRegion> for &str {
-    fn from(region: ValveMatchmakingRegion) -> Self {
-        match region {
-            ValveMatchmakingRegion::Brazil => "Brazil",
-            ValveMatchmakingRegion::Chennai => "Chennai",
-            ValveMatchmakingRegion::Chile => "Chile",
-            ValveMatchmakingRegion::Dubai => "Dubai",
-            ValveMatchmakingRegion::Frankfurt => "Frankfurt",
-            ValveMatchmakingRegion::HongKong => "Hong Kong",
-            ValveMatchmakingRegion::Johannesburg => "Johannesburg",
-            ValveMatchmakingRegion::LA => "LA",
-            ValveMatchmakingRegion::Madrid => "Madrid",
-            ValveMatchmakingRegion::Mumbai => "Mumbai",
-            ValveMatchmakingRegion::Peru => "Peru",
-            ValveMatchmakingRegion::Singapore => "Singapore",
-            ValveMatchmakingRegion::Stockholm => "Stockholm",
-            ValveMatchmakingRegion::Sydney => "Sydney",
-            ValveMatchmakingRegion::Tokyo => "Tokyo",
-            ValveMatchmakingRegion::Virginia => "Virginia",
-            ValveMatchmakingRegion::Washington => "Washington",
+impl Display for ValveMatchmakingRegion {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ValveMatchmakingRegion::Brazil => write!(f, "Brazil"),
+            ValveMatchmakingRegion::Chennai => write!(f, "Chennai"),
+            ValveMatchmakingRegion::Chile => write!(f, "Chile"),
+            ValveMatchmakingRegion::Dubai => write!(f, "Dubai"),
+            ValveMatchmakingRegion::Frankfurt => write!(f, "Frankfurt"),
+            ValveMatchmakingRegion::HongKong => write!(f, "Hong Kong"),
+            ValveMatchmakingRegion::Johannesburg => write!(f, "Johannesburg"),
+            ValveMatchmakingRegion::LA => write!(f, "LA"),
+            ValveMatchmakingRegion::Madrid => write!(f, "Madrid"),
+            ValveMatchmakingRegion::Mumbai => write!(f, "Mumbai"),
+            ValveMatchmakingRegion::Peru => write!(f, "Peru"),
+            ValveMatchmakingRegion::Singapore => write!(f, "Singapore"),
+            ValveMatchmakingRegion::Stockholm => write!(f, "Stockholm"),
+            ValveMatchmakingRegion::Sydney => write!(f, "Sydney"),
+            ValveMatchmakingRegion::Tokyo => write!(f, "Tokyo"),
+            ValveMatchmakingRegion::Virginia => write!(f, "Virginia"),
+            ValveMatchmakingRegion::Washington => write!(f, "Washington"),
         }
     }
 }
@@ -473,6 +568,38 @@ mod tests {
         assert_eq!(
             fakeip_to_int(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))),
             None
+        );
+    }
+
+    #[test]
+    fn test_region_from_str() {
+        assert_eq!(
+            ValveMatchmakingRegion::from_str("Hong Kong").unwrap(),
+            ValveMatchmakingRegion::HongKong
+        );
+    }
+
+    #[test]
+    fn test_region_from_str_err() {
+        assert!(ValveMatchmakingRegion::from_str("foo").is_err());
+    }
+
+    #[test]
+    fn test_region_into_str() {
+        assert_eq!(ValveMatchmakingRegion::HongKong.to_string(), "Hong Kong");
+    }
+
+    #[test]
+    fn test_server_location_from_str() {
+        assert_eq!(
+            ValveServerLocation::from_str("Valve Matchmaking Server (Sydney srcds1013-syd1 #327)")
+                .unwrap(),
+            ValveServerLocation {
+                region: ValveMatchmakingRegion::Sydney,
+                pop: "syd1".into(),
+                cluster: 1013,
+                instance: 327,
+            }
         );
     }
 }
