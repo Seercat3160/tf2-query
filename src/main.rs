@@ -39,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
 
     if let Some(subcommand) = args.subcommand {
         match subcommand {
-            Subcommands::Query { ip, port } => {
+            Subcommands::SDRQuery { ip, port } => {
                 eprintln!("fakeip: {:?}", fakeip_to_int(ip));
 
                 let players = do_fakeip_players_query(ip, port, reqwest_client).await?;
@@ -212,13 +212,7 @@ async fn main() -> anyhow::Result<()> {
         output_servers.push(server);
     }
 
-    if args.json {
-        serde_json::to_writer_pretty(std::io::stdout(), &output_servers)?;
-    } else {
-        for server in output_servers {
-            println!("{server:#?}");
-        }
-    }
+    serde_json::to_writer_pretty(std::io::stdout(), &output_servers)?;
 
     Ok(())
 }
@@ -288,10 +282,6 @@ struct Args {
     #[clap(long)]
     from_file: Option<PathBuf>,
 
-    /// Output a JSON array of servers
-    #[clap(short = 'j')]
-    json: bool,
-
     /// Query each server for it's online players
     #[clap(long)]
     get_players: bool,
@@ -327,7 +317,7 @@ struct Args {
 #[derive(clap::Subcommand)]
 enum Subcommands {
     /// Perform a Fake IP query
-    Query {
+    SDRQuery {
         /// The IP to query
         ip: IpAddr,
         /// The port
