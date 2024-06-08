@@ -7,7 +7,7 @@ use anyhow::anyhow;
 use clap::Parser;
 use lazy_static::lazy_static;
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::select;
 use tokio::time::Duration;
@@ -126,11 +126,11 @@ async fn main() -> anyhow::Result<()> {
         servers.push(server);
     }
 
-    let fewer_servers = servers
+    let fewer_servers: Vec<&Server> = servers
         .iter()
         .filter(|server| {
             if args.has_players {
-                server.players > 0
+                server.num_players > 0
             } else {
                 true
             }
@@ -173,33 +173,50 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             true
-        });
+        })
+        .collect();
 
     let mut interval = tokio::time::interval(Duration::from_secs(1));
 
-    for server in fewer_servers {
-        println!("{server:#?}");
+    let mut output_servers: Vec<Server> = Vec::with_capacity(fewer_servers.len());
+
+    eprintln!("{} servers found", fewer_servers.len());
+
+    for (index, server) in fewer_servers.iter().enumerate() {
+        let mut server = (**server).clone();
 
         if should_loop_exit.is_cancelled() {
             break;
         }
 
         if args.get_players {
-            select! {
-                _ = should_loop_exit.cancelled() => break,
-                _ = interval.tick() => {}
-            }
-
-            // print the current time in UTC
-            // eprintln!("time: {}", chrono::Utc::now());
-
-            let players =
-                do_fakeip_players_query(server.ip, server.port, reqwest_client.clone()).await?;
-
-            println!(
-                "players: {:?}",
-                players.iter().map(|x| { &x.name }).collect::<Vec<_>>()
+            eprintln!(
+                "({} of {}) - fetching players for {} ({}:{})...",
+                index + 1,
+                fewer_servers.len(),
+                server.name,
+                server.ip,
+                server.port
             );
+
+            if server.num_players.is_positive() {
+                select! {
+                    _ = should_loop_exit.cancelled() => break,
+                    _ = interval.tick() => {}
+                }
+
+                server.fetch_players(reqwest_client.clone()).await?;
+            }
+        }
+
+        output_servers.push(server);
+    }
+
+    if args.json {
+        serde_json::to_writer_pretty(std::io::stdout(), &output_servers)?;
+    } else {
+        for server in output_servers {
+            println!("{server:#?}");
         }
     }
 
@@ -238,18 +255,31 @@ async fn do_fakeip_players_query(
 
     let response: serde_json::Value = serde_json::from_str(text)?;
 
-    let players: Vec<Player> = serde_json::from_value(
-        response
-            .get("response")
-            .ok_or(anyhow!("response has no 'response' key"))?
-            .get("players_data")
-            .ok_or(anyhow!("response has no 'players_data' key"))?
-            .get("players")
-            .ok_or(anyhow!("response has no 'players' key"))?
-            .clone(),
-    )?;
+    let players: Vec<Player>;
 
-    Ok(players)
+    if let Some(res_response) = response.get("response").and_then(|x| x.as_object()) {
+        if let Some(res_players_data) = res_response.get("players_data").and_then(|x| x.as_object())
+        {
+            if let Some(res_players) = res_players_data.get("players").and_then(|x| x.as_array()) {
+                players = res_players
+                    .iter()
+                    .map(|x| {
+                        serde_json::from_value(x.clone())
+                            .map_err(|e| anyhow!("Error parsing player data: {e:#}"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                Ok(players)
+            } else {
+                // no players on this server
+                Ok(vec![])
+            }
+        } else {
+            Err(anyhow!("response has no 'players_data' key"))
+        }
+    } else {
+        Err(anyhow!("response has no 'response' key"))
+    }
 }
 
 #[derive(clap::Parser)]
@@ -257,6 +287,10 @@ struct Args {
     /// Read from JSON file rather than performing an API call for the list of servers
     #[clap(long)]
     from_file: Option<PathBuf>,
+
+    /// Output a JSON array of servers
+    #[clap(short = 'j')]
+    json: bool,
 
     /// Query each server for it's online players
     #[clap(long)]
@@ -325,7 +359,7 @@ struct RawServer {
     gametype: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize)]
 #[allow(dead_code)]
 /// The server data we care about, with better types.
 struct Server {
@@ -333,7 +367,8 @@ struct Server {
     port: u16,
     name: String,
     region: Region,
-    players: i32,
+    players: Option<Vec<Player>>,
+    num_players: i32,
     max_players: i32,
     bots: i32,
     map: String,
@@ -357,7 +392,8 @@ impl TryFrom<RawServer> for Server {
                 valve_server_location: server.name.clone().parse::<ValveServerLocation>().ok(),
                 name: server.name,
                 region: server.region.into(),
-                players: server.players,
+                players: None,
+                num_players: server.players,
                 max_players: server.max_players,
                 bots: server.bots,
                 map: server.map,
@@ -369,8 +405,35 @@ impl TryFrom<RawServer> for Server {
     }
 }
 
+impl Server {
+    /// Fetch players for this server, if they haven't already been fetched
+    async fn fetch_players(&mut self, reqwest_client: reqwest::Client) -> anyhow::Result<()> {
+        if self.players.is_some() {
+            return Ok(());
+        }
+
+        match self.ip {
+            IpAddr::V4(ip) => {
+                if ip.is_link_local() {
+                    let players =
+                        do_fakeip_players_query(self.ip, self.port, reqwest_client).await?;
+                    self.players = Some(players);
+                    Ok(())
+                } else {
+                    Err(anyhow!(
+                        "We can only query players for servers behind a Fake IP"
+                    ))
+                }
+            }
+            IpAddr::V6(_) => Err(anyhow!(
+                "IPv6 not supported yet - we can only query players for servers behind a Fake IP"
+            )),
+        }
+    }
+}
+
 /// A server region as reported by the Steam API. See https://developer.valvesoftware.com/wiki/Sv_region
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize)]
 enum Region {
     World,
     USEast,
@@ -402,12 +465,25 @@ impl From<i32> for Region {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone, Serialize)]
+#[serde(into = "String")] // Serialize just the player name
 #[allow(dead_code)]
 struct Player {
     name: String,
     score: i32,
     time_played: u32,
+}
+
+impl Display for Player {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name)
+    }
+}
+
+impl From<Player> for String {
+    fn from(player: Player) -> Self {
+        player.name
+    }
 }
 
 /// Convert an IP address to an integer, ready to be passed to Steam's fake IP API.
@@ -427,7 +503,7 @@ fn fakeip_to_int(ip: IpAddr) -> Option<u32> {
 
 /// Information about an official TF2 server (Casual, Competitive, MvM, etc) determined by parsing it's name.
 /// Field names are all guesses as to what the different parts mean.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize)]
 struct ValveServerLocation {
     region: ValveMatchmakingRegion,
     /// Point-of-Presence.
@@ -481,7 +557,7 @@ lazy_static! {
 /// The region/city name found in the hostname of official Valve Matchmaking Servers.
 /// Non-exhaustive because these are the only ones I've seen be returned but there could be others.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 enum ValveMatchmakingRegion {
     Brazil,
     Chennai,
