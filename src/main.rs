@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let reqwest_client = reqwest::ClientBuilder::new()
-        .user_agent("TF-Data-Tracker/0.1.0")
+        .user_agent(format!("TF2Query/{} (#FixTF2)", env!("CARGO_PKG_VERSION")))
         .build()?;
 
     if let Some(subcommand) = args.subcommand {
