@@ -137,6 +137,13 @@ async fn main() -> anyhow::Result<()> {
             }
         })
         .filter(|server| {
+            if args.no_mvm {
+                !server.tags.contains(&"mvm".to_string())
+            } else {
+                true
+            }
+        })
+        .filter(|server| {
             // if it has `valve` in the tags, make sure it has valid valve server location data, and if we're filtering for valve servers, make sure it's all good
             if server.tags.contains(&"valve".to_string()) {
                 match &server.valve_server_location {
@@ -297,6 +304,10 @@ struct Args {
     /// Filter for only servers with online players
     #[clap(long)]
     has_players: bool,
+
+    /// Filter: exclude MvM servers
+    #[clap(long)]
+    no_mvm: bool,
 
     /// Filter for only Valve servers
     #[clap(long)]
