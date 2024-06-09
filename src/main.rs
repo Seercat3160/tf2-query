@@ -40,14 +40,15 @@ async fn main() -> anyhow::Result<()> {
     if let Some(subcommand) = args.subcommand {
         match subcommand {
             Subcommands::SDRQuery { ip, port } => {
-                eprintln!("fakeip: {:?}", fakeip_to_int(ip));
+                eprintln!(
+                    "fakeip integer representation of server IP {}: {:?}",
+                    ip,
+                    fakeip_to_int(ip)
+                );
 
                 let players = do_fakeip_players_query(ip, port, reqwest_client).await?;
 
-                eprintln!(
-                    "players: {:?}",
-                    players.iter().map(|x| { &x.name }).collect::<Vec<_>>()
-                );
+                eprintln!("{players:#?}");
 
                 return Ok(());
             }
@@ -189,7 +190,12 @@ async fn main() -> anyhow::Result<()> {
             break;
         }
 
-        if args.get_players {
+        if args.get_players && server.num_players.is_positive() {
+            select! {
+                _ = should_loop_exit.cancelled() => break,
+                _ = interval.tick() => {}
+            }
+
             eprintln!(
                 "({} of {}) - fetching players for {} ({}:{})...",
                 index + 1,
@@ -199,14 +205,16 @@ async fn main() -> anyhow::Result<()> {
                 server.port
             );
 
-            if server.num_players.is_positive() {
-                select! {
-                    _ = should_loop_exit.cancelled() => break,
-                    _ = interval.tick() => {}
-                }
-
-                server.fetch_players(reqwest_client.clone()).await?;
-            }
+            server.fetch_players(reqwest_client.clone()).await?;
+        } else {
+            eprintln!(
+                "({} of {}) - not fetching players for {} ({}:{})...",
+                index + 1,
+                fewer_servers.len(),
+                server.name,
+                server.ip,
+                server.port
+            );
         }
 
         output_servers.push(server);
@@ -316,7 +324,7 @@ struct Args {
 
 #[derive(clap::Subcommand)]
 enum Subcommands {
-    /// Perform a Fake IP query
+    /// Perform a Fake IP query, returning a list of players
     SDRQuery {
         /// The IP to query
         ip: IpAddr,
