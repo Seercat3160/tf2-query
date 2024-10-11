@@ -498,8 +498,6 @@ impl From<i32> for Region {
 }
 
 #[derive(Debug, Deserialize, Clone, Serialize)]
-#[serde(into = "String")] // Serialize just the player name
-#[allow(dead_code)]
 struct Player {
     name: String,
     // I don't remember why I made this an i32 initially.

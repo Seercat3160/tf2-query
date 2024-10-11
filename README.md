@@ -25,18 +25,3 @@ Note: This may take a while to run, as it needs to query each server for it's on
 ```sh
 tf2-query --valve --get-players
 ```
-
-#### Find all casual servers where users have "killtf2" in their name
-
-This chains `tf2-query` with some other commands:
-
-- `jq` to manipulate and filter JSON
-- `perl` to strip special characters (bots often use non-printing characters in their names so that multiple can have the same visible name in the same server)
-
-I recommend sending the `tf2-query` output to a file so that if the other commands fail, you can inspect the output without having to run `tf2-query` again.
-
-```sh
-tf2-query --get-players --has-players --valve > servers.json
-
-cat servers.json | perl -p -e 's/[^[:ascii:]]+//g' - | jq '.[] | select(.players | map(ascii_downcase) | contains(["killtf2"]))
-```
