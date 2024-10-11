@@ -280,13 +280,21 @@ async fn do_fakeip_players_query(
         if let Some(res_players_data) = res_response.get("players_data").and_then(|x| x.as_object())
         {
             if let Some(res_players) = res_players_data.get("players").and_then(|x| x.as_array()) {
-                players = res_players
+                players = match res_players
                     .iter()
                     .map(|x| {
                         serde_json::from_value(x.clone())
                             .map_err(|e| anyhow!("Error parsing player data: {e:#}"))
                     })
-                    .collect::<Result<Vec<_>, _>>()?;
+                    .collect::<Result<Vec<_>, _>>()
+                {
+                    Ok(players) => players,
+                    Err(e) => {
+                        // print additional data to help debug the issue where score is sometimes u32::MAX rather than an i32
+                        eprintln!("Error parsing. Data: {res_players:#?}");
+                        return Err(e);
+                    }
+                };
 
                 Ok(players)
             } else {
