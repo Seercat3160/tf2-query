@@ -47,8 +47,7 @@ async fn main() -> anyhow::Result<()> {
                     fakeip_to_int(addr.ip())
                 );
 
-                let players =
-                    do_fakeip_players_query(addr.ip(), addr.port(), reqwest_client).await?;
+                let players = do_fakeip_players_query(addr, reqwest_client).await?;
 
                 eprintln!("{players:#?}");
 
@@ -270,8 +269,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn do_fakeip_players_query(
-    ip: IpAddr,
-    port: u16,
+    addr: SocketAddr,
     reqwest_client: reqwest::Client,
 ) -> anyhow::Result<Vec<Player>> {
     let request = reqwest_client
@@ -285,8 +283,8 @@ async fn do_fakeip_players_query(
                 "input_json",
                 json!(
                     {
-                        "fake_ip": fakeip_to_int(ip).ok_or(anyhow!("FakeIP must be IPv4"))?, // I don't think actual Valve FakeIPs can be IPv6
-                        "fake_port": port,
+                        "fake_ip": fakeip_to_int(addr.ip()).ok_or(anyhow!("FakeIP must be IPv4"))?, // I don't think actual Valve FakeIPs can be IPv6
+                        "fake_port": addr.port(),
                         "app_id": 440,
                         "query_type": 2
                     }
@@ -478,8 +476,11 @@ impl Server {
         match self.ip {
             IpAddr::V4(ip) => {
                 if ip.is_link_local() {
-                    let players =
-                        do_fakeip_players_query(self.ip, self.port, reqwest_client).await?;
+                    let players = do_fakeip_players_query(
+                        SocketAddr::new(ip.into(), self.port),
+                        reqwest_client,
+                    )
+                    .await?;
                     self.players = Some(players);
                     Ok(())
                 } else {
