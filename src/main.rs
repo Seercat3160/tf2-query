@@ -22,6 +22,7 @@ lazy_static! {
 }
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
@@ -55,14 +56,14 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    let response: serde_json::Value;
+    let response_value: serde_json::Value;
 
     if let Some(file) = args.from_file {
         eprintln!("reading server list from file: {file:?}");
 
         let text = tokio::fs::read_to_string(file).await?;
 
-        response = serde_json::from_str(&text)?;
+        response_value = serde_json::from_str(&text)?;
     } else {
         eprintln!("getting server list from API...");
 
@@ -86,7 +87,9 @@ async fn main() -> anyhow::Result<()> {
                     json!(
                         {
                             "filter": filter_string,
-                            "limit": 100000 // arbitrary large number to hopefully get all servers, there doesn't seem to be any pagination
+                            // arbitrary large number to hopefully get all servers, there doesn't seem to be any pagination.
+                            // I've not seen it return more than 10,000 servers at a time even with this higher than that.
+                            "limit": 100_000
                         }
                     )
                     .to_string(),
@@ -96,15 +99,15 @@ async fn main() -> anyhow::Result<()> {
         // print the current time in UTC
         eprintln!("time: {}", chrono::Utc::now());
 
-        let res = req.send().await?;
+        let response = req.send().await?;
 
-        let text = &res.text().await?;
+        let response_text = &response.text().await?;
 
-        response = serde_json::from_str(text)?;
+        response_value = serde_json::from_str(response_text)?;
     }
 
     let raw_servers: Vec<RawServer> = serde_json::from_value(
-        response
+        response_value
             .get("response")
             .ok_or(anyhow!("response has no 'response' key"))?
             .get("servers")
@@ -199,7 +202,7 @@ async fn main() -> anyhow::Result<()> {
 
         if args.get_players && server.num_players.is_positive() {
             select! {
-                _ = should_loop_exit.cancelled() => break,
+                () = should_loop_exit.cancelled() => break,
                 _ = interval.tick() => {}
             }
 
@@ -212,7 +215,14 @@ async fn main() -> anyhow::Result<()> {
                 server.port
             );
 
-            server.fetch_players(reqwest_client.clone()).await?;
+            match server.fetch_players(reqwest_client.clone()).await {
+                Ok(()) => {}
+                Err(e) => {
+                    eprintln!("Error fetching players: {e:#}");
+                    // skip this server, but keep going
+                    continue;
+                }
+            }
         } else {
             eprintln!(
                 "({} of {}) - not fetching players for {} ({}:{})...",
@@ -237,7 +247,7 @@ async fn do_fakeip_players_query(
     port: u16,
     reqwest_client: reqwest::Client,
 ) -> anyhow::Result<Vec<Player>> {
-    let req = reqwest_client
+    let request = reqwest_client
         .get(STEAM_API_URL.join("/IGameServersService/QueryByFakeIP/v1")?)
         .query(&[
             (
@@ -258,15 +268,15 @@ async fn do_fakeip_players_query(
             ),
         ]);
 
-    let res = req.send().await?;
+    let response = request.send().await?;
 
-    let text = &res.text().await?;
+    let response_text = &response.text().await?;
 
-    let response: serde_json::Value = serde_json::from_str(text)?;
+    let response_value: serde_json::Value = serde_json::from_str(response_text)?;
 
     let players: Vec<Player>;
 
-    if let Some(res_response) = response.get("response").and_then(|x| x.as_object()) {
+    if let Some(res_response) = response_value.get("response").and_then(|x| x.as_object()) {
         if let Some(res_players_data) = res_response.get("players_data").and_then(|x| x.as_object())
         {
             if let Some(res_players) = res_players_data.get("players").and_then(|x| x.as_array()) {
@@ -292,6 +302,7 @@ async fn do_fakeip_players_query(
 }
 
 #[derive(clap::Parser)]
+#[allow(clippy::struct_excessive_bools)]
 struct Args {
     /// Read from JSON file rather than performing an API call for the list of servers
     #[clap(long)]
@@ -406,7 +417,11 @@ impl TryFrom<RawServer> for Server {
                 max_players: server.max_players,
                 bots: server.bots,
                 map: server.map,
-                tags: server.gametype.split(',').map(|x| x.to_string()).collect(),
+                tags: server
+                    .gametype
+                    .split(',')
+                    .map(std::string::ToString::to_string)
+                    .collect(),
             })
         } else {
             Err(anyhow!("invalid server address: {input_addr}"))
@@ -479,6 +494,12 @@ impl From<i32> for Region {
 #[allow(dead_code)]
 struct Player {
     name: String,
+    // I don't remember why I made this an i32 initially.
+    // According to https://developer.valvesoftware.com/wiki/Server_queries#A2S_PLAYER,
+    // the version of this used by queries directly to a gameserver is a C++ long, which is a signed 32-bit integer.
+    // However, as of 2024-10-11 around 3:30 UTC, I've seen it sometimes be 4294967295
+    // (2^32 - 1, so the maximum value of an UNSIGNED 32-bit integer) and thus fail to deserialize.
+    // I wonder if this is related to casual matchmaking reportedly being broken for some today?
     score: i32,
     time_played: u32,
 }
@@ -500,10 +521,10 @@ fn fakeip_to_int(ip: IpAddr) -> Option<u32> {
     match ip {
         IpAddr::V4(ip) => {
             let ip_parts: [u8; 4] = ip.octets();
-            let ip_integer = (ip_parts[0] as u32) << 24
-                | (ip_parts[1] as u32) << 16
-                | (ip_parts[2] as u32) << 8
-                | (ip_parts[3] as u32);
+            let ip_integer = u32::from(ip_parts[0]) << 24
+                | u32::from(ip_parts[1]) << 16
+                | u32::from(ip_parts[2]) << 8
+                | u32::from(ip_parts[3]);
             Some(ip_integer)
         }
         IpAddr::V6(_) => None,
@@ -645,10 +666,11 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::unreadable_literal)]
     fn test_fakeip_to_int() {
         assert_eq!(
             fakeip_to_int(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
-            Some(2130706433)
+            Some(0b01111111_00000000_00000000_00000001)
         );
         assert_eq!(
             fakeip_to_int(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))),
