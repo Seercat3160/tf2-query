@@ -1,5 +1,5 @@
 use std::fmt::{Display, Formatter};
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -40,14 +40,41 @@ async fn main() -> anyhow::Result<()> {
 
     if let Some(subcommand) = args.subcommand {
         match subcommand {
-            Subcommands::SDRQuery { ip, port } => {
+            Subcommands::SDRQuery { addr } => {
                 eprintln!(
                     "fakeip integer representation of server IP {}: {:?}",
-                    ip,
-                    fakeip_to_int(ip)
+                    addr.ip(),
+                    fakeip_to_int(addr.ip())
                 );
 
-                let players = do_fakeip_players_query(ip, port, reqwest_client).await?;
+                let players =
+                    do_fakeip_players_query(addr.ip(), addr.port(), reqwest_client).await?;
+
+                eprintln!("{players:#?}");
+
+                return Ok(());
+            }
+            Subcommands::A2SQuery { addr } => {
+                let mut client = a2s::A2SClient::new().await?;
+                let client = client.app_id(440);
+
+                let server_info = match client.info(addr).await {
+                    Ok(server_info) => server_info,
+                    Err(e) => {
+                        eprintln!("Error getting server info: {e:#}");
+                        return Ok(());
+                    }
+                };
+
+                eprintln!("{server_info:#?}");
+
+                let players = match client.players(addr).await {
+                    Ok(players) => players,
+                    Err(e) => {
+                        eprintln!("Error getting players: {e:#}");
+                        return Ok(());
+                    }
+                };
 
                 eprintln!("{players:#?}");
 
@@ -356,10 +383,13 @@ struct Args {
 enum Subcommands {
     /// Perform a Fake IP query, returning a list of players
     SDRQuery {
-        /// The IP to query
-        ip: IpAddr,
-        /// The port
-        port: u16,
+        /// Address of the server
+        addr: SocketAddr,
+    },
+    /// Perform an A2S query, returning server info and players.
+    A2SQuery {
+        /// Address of the server
+        addr: SocketAddr,
     },
 }
 
@@ -401,6 +431,7 @@ struct Server {
     bots: i32,
     map: String,
     tags: Vec<String>,
+    /// Data parsed from the server's name following the format (e.g.) "Valve Matchmaking Server (Sydney srcds1013-syd1 #252)"
     valve_server_location: Option<ValveServerLocation>,
 }
 

@@ -25,3 +25,21 @@ Note: This may take a while to run, as it needs to query each server for it's on
 ```sh
 tf2-query --valve --get-players
 ```
+
+#### Query a server behind SDR for its online players by providing a "Fake IP"
+
+For example, a server with address `169.254.125.252` (an SDR Fake IP) and port `31312`:
+
+```sh
+tf2-query sdr-query 169.254.125.252:31312
+```
+
+#### Query an Internet-accessible server for its online players and other info
+
+Be aware that this directly connects to the server, so it will be able to see your IP address.
+
+For example, a server with address `127.0.0.1` (an SDR Fake IP) and port `27015`:
+
+```sh
+tf2-query a2s-query 127.0.0.1:27015
+```

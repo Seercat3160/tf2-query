@@ -8,6 +8,7 @@ pedantic = { level = "warn", priority = -1 }
 doc_markdown = "allow"
 
 [dependencies]
+a2s = { version = "0.5.2", features = ["async"] }
 anyhow = "1.0.86"
 chrono = "0.4.38"
 clap = { version = "4.5.4", features = ["derive"] }
