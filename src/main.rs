@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::LazyLock;
 
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 use clap::Parser;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -181,25 +181,25 @@ async fn main() -> anyhow::Result<()> {
                     Some(valve_server_location) => {
                         // check filters based on this data
                         if args.valve {
-                            if let Some(region) = &args.valve_region {
-                                if region != &valve_server_location.region {
-                                    return false;
-                                }
+                            if let Some(region) = &args.valve_region
+                                && region != &valve_server_location.region
+                            {
+                                return false;
                             }
-                            if let Some(cluster) = &args.valve_cluster {
-                                if cluster != &valve_server_location.cluster {
-                                    return false;
-                                }
+                            if let Some(cluster) = &args.valve_cluster
+                                && cluster != &valve_server_location.cluster
+                            {
+                                return false;
                             }
-                            if let Some(pop) = &args.valve_pop {
-                                if pop != &valve_server_location.pop {
-                                    return false;
-                                }
+                            if let Some(pop) = &args.valve_pop
+                                && pop != &valve_server_location.pop
+                            {
+                                return false;
                             }
-                            if let Some(instance) = &args.valve_instance {
-                                if instance != &valve_server_location.instance {
-                                    return false;
-                                }
+                            if let Some(instance) = &args.valve_instance
+                                && instance != &valve_server_location.instance
+                            {
+                                return false;
                             }
                         }
                     }
@@ -439,32 +439,25 @@ impl TryFrom<RawServer> for Server {
     type Error = anyhow::Error;
 
     fn try_from(server: RawServer) -> Result<Self, Self::Error> {
-        let input_addr = server.addr;
-
-        let ip_without_port = input_addr.rfind(':').map(|i| &input_addr[..i]);
-
-        if let Some(ip_without_port) = ip_without_port {
-            Ok(Server {
-                // convert from form `127.0.0.1:8080` to `127.0.0.1` by getting part before the last colon and parsing
-                ip: ip_without_port.parse()?,
-                port: server.gameport,
-                valve_server_location: server.name.clone().parse::<ValveServerLocation>().ok(),
-                name: server.name,
-                region: server.region.into(),
-                players: None,
-                num_players: server.players,
-                max_players: server.max_players,
-                bots: server.bots,
-                map: server.map,
-                tags: server
-                    .gametype
-                    .split(',')
-                    .map(std::string::ToString::to_string)
-                    .collect(),
-            })
-        } else {
-            Err(anyhow!("invalid server address: {input_addr}"))
-        }
+        Ok(Server {
+            ip: SocketAddr::from_str(&server.addr)
+                .context("Failed to parse server address")?
+                .ip(),
+            port: server.gameport,
+            valve_server_location: server.name.clone().parse::<ValveServerLocation>().ok(),
+            name: server.name,
+            region: server.region.into(),
+            players: None,
+            num_players: server.players,
+            max_players: server.max_players,
+            bots: server.bots,
+            map: server.map,
+            tags: server
+                .gametype
+                .split(',')
+                .map(std::string::ToString::to_string)
+                .collect(),
+        })
     }
 }
 
@@ -708,13 +701,10 @@ mod tests {
     #[allow(clippy::unreadable_literal)]
     fn test_fakeip_to_int() {
         assert_eq!(
-            fakeip_to_int(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
+            fakeip_to_int(IpAddr::V4(Ipv4Addr::LOCALHOST)),
             Some(0b01111111_00000000_00000000_00000001)
         );
-        assert_eq!(
-            fakeip_to_int(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))),
-            None
-        );
+        assert_eq!(fakeip_to_int(IpAddr::V6(Ipv6Addr::LOCALHOST)), None);
     }
 
     #[test]
