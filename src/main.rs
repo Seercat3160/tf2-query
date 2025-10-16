@@ -2,10 +2,10 @@ use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::LazyLock;
 
 use anyhow::anyhow;
 use clap::Parser;
-use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -16,10 +16,9 @@ use url::Url;
 
 const STEAM_API_BASE: &str = "https://api.steampowered.com";
 
-lazy_static! {
-    static ref STEAM_API_URL: Url =
-        Url::parse(STEAM_API_BASE).expect("STEAM_API_BASE must be a valid URL");
-}
+static STEAM_API_URL: LazyLock<Url> = std::sync::LazyLock::new(|| {
+    Url::parse(STEAM_API_BASE).expect("STEAM_API_BASE must be a valid URL")
+});
 
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
@@ -85,7 +84,10 @@ async fn main() -> anyhow::Result<()> {
     let response_value: serde_json::Value;
 
     if let Some(file) = args.from_file {
-        eprintln!("reading server list from file: {file:?}");
+        #[allow(clippy::unnecessary_debug_formatting)]
+        {
+            eprintln!("reading server list from file: {file:?}");
+        }
 
         let text = tokio::fs::read_to_string(file).await?;
 
@@ -617,10 +619,9 @@ impl Display for ValveServerLocation {
     }
 }
 
-lazy_static! {
-    static ref VALVE_SERVER_LOCATION_REGEX: Regex =
-        regex::Regex::new(r"^Valve Matchmaking Server \(([[:alpha:] ]+) srcds([[:digit:]]+)-([[:lower:]]{3}[[:digit:]]+) #([[:digit:]]+)\)$").expect("regex should be valid");
-}
+static VALVE_SERVER_LOCATION_REGEX: LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"^Valve Matchmaking Server \(([[:alpha:] ]+) srcds([[:digit:]]+)-([[:lower:]]{3}[[:digit:]]+) #([[:digit:]]+)\)$").expect("regex should be valid")
+});
 
 /// The region/city name found in the hostname of official Valve Matchmaking Servers.
 /// Non-exhaustive because these are the only ones I've seen be returned but there could be others.

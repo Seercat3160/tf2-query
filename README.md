@@ -8,7 +8,7 @@ A tool for querying data about currently online Team Fortress 2 servers from the
 Running the program requires a valid Steam API key in the `STEAM_API_KEY` environment variable.
 Get one from <https://steamcommunity.com/dev/apikey>.
 
-I have tried my best to ensure rate limits are respected, but you are responsible for ensuring that you comply with the Steam API terms of service.
+I have tried to ensure rate limits are respected, but you are responsible for ensuring that you comply with the Steam API terms of service.
 
 ### Examples
 
@@ -38,8 +38,14 @@ tf2-query sdr-query 169.254.125.252:31312
 
 Be aware that this directly connects to the server, so it will be able to see your IP address.
 
-For example, a server with address `127.0.0.1` (an SDR Fake IP) and port `27015`:
+For example, a server with address `127.0.0.1` and port `27015`:
 
 ```sh
 tf2-query a2s-query 127.0.0.1:27015
+```
+
+#### Get a summary of populated Valve casual servers in the Sydney region
+
+```sh
+tf2-query --has-players --no-mvm --valve --valve-region Sydney | jq --raw-output 'sort_by(.num_players) | reverse | [.[] | "\(.map) - \(.num_players)/\(.max_players) players"] | sort | .[]'
 ```
