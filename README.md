@@ -15,12 +15,12 @@ I have tried to ensure rate limits are respected, but you are responsible for en
 #### Get all Valve servers in Sydney
 
 ```sh
-tf2-query --valve --valve-region Sydney
+tf2-query --valve --valve-location syd
 ```
 
 #### Get all Valve servers worldwide, fetching their online players
 
-Note: This may take a while to run, as it needs to query each server for it's online players. If not using `--get-players`, only one request is ever made, for the main server list.
+Note: This may take a while to run, as it needs to query each server individually for online players. If not using `--get-players`, only one request is ever made (for the main server list).
 
 ```sh
 tf2-query --valve --get-players
@@ -47,5 +47,40 @@ tf2-query a2s-query 127.0.0.1:27015
 #### Get a summary of populated Valve casual servers in the Sydney region
 
 ```sh
-tf2-query --has-players --no-mvm --valve --valve-region Sydney | jq --raw-output 'sort_by(.num_players) | reverse | [.[] | "\(.map) - \(.num_players)/\(.max_players) players"] | sort | .[]'
+tf2-query --has-players --no-mvm --valve --valve-location syd | jq --raw-output 'sort_by(.num_players) | reverse | [.[] | "\(.map) - \(.num_players)/\(.max_players) players"] | sort | .[]'
 ```
+
+## Valve Servers
+
+It is possible to filter for Valve servers from a specific region based on the "airport code" of the datacentre.
+Specify this using `--valve-location code`, which matches any starting with `code`.
+
+Here is a list of known valid locations, based on the in-game list under matchmaking settings. This list may not be exhaustive.
+
+- Sydney, Australia: `syd`
+- Singapore: `sgp`
+- Hong Kong: `hkg`
+- Ambattur, Chennai, India: `maa`
+- Mumbai, India: `bom`
+- Los Angeles, USA: `lax`
+- Tokyo, Japan: `tyo`
+- Seattle, USA: `sea`
+- Dallas, USA: `dfw`
+- Atlanta, USA: `atl`
+- Chicago, USA: `ord`
+- Sterling, Virginia, USA: `iad`
+- Seoul, South Korea: `seo`
+- Lima, Peru: `lim`
+- Santiago, Chile: `scl`
+- Dubai, UAE: `dxb`
+- London, England: `lhr`
+- Frankfurt, Germany: `fra`
+- Falkenstein, Germany: `fsn`
+- Madrid, Spain: `mad`
+- Buenos Aires, Argentina: `eze`
+- Vienna, Austria: `vie`
+- Warsaw, Poland: `waw`
+- Stockholm, Sweden: `sto`
+- Sao Paulo, Brazil: `gru`
+- Johannesburg, South Africa: `jnb`
+- Helsinki, Finland: `hel`

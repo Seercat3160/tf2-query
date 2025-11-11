@@ -1512,7 +1512,7 @@ dependencies = [
 
 [[package]]
 name = "tf2-query"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "a2s",
  "anyhow",
