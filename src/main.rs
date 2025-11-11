@@ -1,4 +1,4 @@
-use std::fmt::{Display, Formatter};
+use std::fmt::{Display, Formatter, Write};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -6,6 +6,7 @@ use std::sync::LazyLock;
 
 use anyhow::{Context, anyhow};
 use clap::Parser;
+use log::{debug, error};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -25,6 +26,8 @@ static STEAM_API_URL: LazyLock<Url> = std::sync::LazyLock::new(|| {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
+    pretty_env_logger::init();
+
     let should_exit = CancellationToken::new();
     let should_loop_exit = should_exit.clone();
 
@@ -34,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let reqwest_client = reqwest::ClientBuilder::new()
-        .user_agent(format!("TF2Query/{} (#FixTF2)", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("TF2Query/{}", env!("CARGO_PKG_VERSION")))
         .build()?;
 
     if let Some(subcommand) = args.subcommand {
@@ -59,7 +62,7 @@ async fn main() -> anyhow::Result<()> {
                 let server_info = match client.info(addr).await {
                     Ok(server_info) => server_info,
                     Err(e) => {
-                        eprintln!("Error getting server info: {e:#}");
+                        error!("Error getting server info: {e:#}");
                         return Ok(());
                     }
                 };
@@ -69,7 +72,7 @@ async fn main() -> anyhow::Result<()> {
                 let players = match client.players(addr).await {
                     Ok(players) => players,
                     Err(e) => {
-                        eprintln!("Error getting players: {e:#}");
+                        error!("Error getting players: {e:#}");
                         return Ok(());
                     }
                 };
@@ -97,11 +100,42 @@ async fn main() -> anyhow::Result<()> {
 
         // This could be done better, like some proper structured representation from which the filter string can be constructed
         // See https://github.com/MegaAntiCheat/masterbase/blob/64ada88eff0d398ae229a44db2eeb8a31f00b126/masterbase/steam.py#L51
-        let filter_string = if args.valve {
-            "appid\\440\\gametype\\valve\\name_match\\Valve Matchmaking Server *\\secure\\1\\linux\\1"
-        } else {
-            "appid\\440\\"
-        };
+        let mut filter_string = "appid\\440".to_string();
+
+        if args.valve {
+            // construct the filter pattern for the name based on the various filtering options we provide on the CLI.
+            // wildcards used if we don't care (not specified).
+            // Note that I made up these names, they don't have any real meaning other than sounding reasonable.
+            let name_pattern = format!(
+                "Valve Matchmaking Server ({region} srcds{cluster}-{pop} #{instance})",
+                region = args
+                    .valve_region
+                    .as_ref()
+                    .map_or("*".to_string(), std::string::ToString::to_string),
+                cluster = args
+                    .valve_cluster
+                    .as_ref()
+                    .map_or("*".to_string(), std::string::ToString::to_string),
+                pop = args.valve_pop.as_ref().unwrap_or(&"*".to_string()),
+                instance = args
+                    .valve_instance
+                    .as_ref()
+                    .map_or("*".to_string(), std::string::ToString::to_string),
+            );
+
+            let _ = write!(
+                filter_string,
+                "\\gametype\\valve\\name_match\\{name_pattern}\\secure\\1\\linux\\1"
+            );
+        }
+        if args.has_players {
+            filter_string += "\\empty\\1";
+        }
+        // must be last since it uses "nor". If other negative rules are added in future, group them such that only one "nor" is present.
+        // the wiki doesn't mention this, but the nor takes an argument that "Should specify the total size of the operand(s), meaning the number of \op\operand pairs" (according to the error message I got from the API)
+        if args.no_mvm {
+            filter_string += "\\nor\\1\\gametype\\mvm";
+        }
 
         let req = reqwest_client
             .get(STEAM_API_URL.join("/IGameServersService/GetServerList/v1")?)
@@ -124,10 +158,12 @@ async fn main() -> anyhow::Result<()> {
                 ),
             ]);
 
-        // print the current time in UTC
+        let req = req.build()?;
+        debug!("requesting: {}", req.url());
+
         eprintln!("time: {}", chrono::Utc::now());
 
-        let response = req.send().await?;
+        let response = reqwest_client.execute(req).await?;
 
         let response_text = &response.text().await?;
 
@@ -150,7 +186,7 @@ async fn main() -> anyhow::Result<()> {
         let server: Server = match raw_server.try_into() {
             Ok(server) => server,
             Err(e) => {
-                eprintln!("error parsing server data: {e:#}");
+                error!("error parsing server data: {e:#}");
                 continue;
             }
         };
@@ -219,7 +255,11 @@ async fn main() -> anyhow::Result<()> {
 
     let mut output_servers: Vec<Server> = Vec::with_capacity(fewer_servers.len());
 
-    eprintln!("{} servers found", fewer_servers.len());
+    eprintln!(
+        "{} servers found after additional filtering, out of {} returned by the API",
+        fewer_servers.len(),
+        servers.len()
+    );
 
     for (index, server) in fewer_servers.iter().enumerate() {
         let mut server = (**server).clone();
@@ -246,7 +286,7 @@ async fn main() -> anyhow::Result<()> {
             match server.fetch_players(reqwest_client.clone()).await {
                 Ok(()) => {}
                 Err(e) => {
-                    eprintln!("Error fetching players: {e:#}");
+                    error!("Error fetching players: {e:#}");
                     // skip this server, but keep going
                     continue;
                 }
@@ -318,7 +358,7 @@ async fn do_fakeip_players_query(
                     Ok(players) => players,
                     Err(e) => {
                         // print additional data to help debug the issue where score is sometimes u32::MAX rather than an i32
-                        eprintln!("Error parsing. Data: {res_players:#?}");
+                        error!("Error parsing. Data: {res_players:#?}");
                         return Err(e);
                     }
                 };
