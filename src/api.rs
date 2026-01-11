@@ -9,10 +9,10 @@ use std::{
 
 use anyhow::{Context, anyhow};
 
-use log::debug;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tracing::{debug, warn};
 use url::Url;
 
 static STEAM_API_URL: LazyLock<Url> = std::sync::LazyLock::new(|| {
@@ -61,7 +61,13 @@ impl ApiClient {
                 ),
             ]);
 
-        let response: serde_json::Value = request.send().await?.json().await?;
+        let response: serde_json::Value = request
+            .send()
+            .await
+            .context("SDR playerlist query failed")?
+            .json()
+            .await
+            .context("Could not deserialize JSON in SDR playerlist response")?;
 
         let players: Vec<Player> = match response.pointer("/response/players_data/players") {
             Some(val) => serde_json::from_value(val.clone())?,
@@ -97,10 +103,25 @@ impl ApiClient {
 
         let response: serde_json::Value = self.client.execute(req).await?.json().await?;
 
-        let servers: Vec<RawServer> = match response.pointer("/response/servers") {
-            Some(val) => serde_json::from_value(val.clone())?,
-            None => vec![],
-        };
+        let servers_untyped = response
+            .pointer("/response/servers")
+            .cloned()
+            .unwrap_or_else(|| json!([]))
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+
+        let mut servers: Vec<RawServer> = Vec::with_capacity(servers_untyped.len());
+
+        for val in servers_untyped {
+            match serde_json::from_value(val.clone()) {
+                Ok(server) => servers.push(server),
+                Err(e) => warn!(
+                    "could not deserialize JSON from server data {}: {e}",
+                    serde_json::to_string_pretty(&val).unwrap_or("{}".into())
+                ),
+            }
+        }
 
         Ok(servers)
     }

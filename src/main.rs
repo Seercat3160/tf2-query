@@ -3,10 +3,13 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use clap::Parser;
-use log::error;
 use tokio::select;
 use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
+use tracing::{error, info};
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 use crate::api::{ApiClient, Server, fakeip_to_int};
 use crate::filter::Filter;
@@ -19,7 +22,18 @@ mod filter;
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    pretty_env_logger::init();
+    tracing_subscriber::registry()
+        .with(
+            EnvFilter::try_from_default_env()
+                .or_else(|_| EnvFilter::try_new("tf2_query=info"))
+                .unwrap(),
+        )
+        .with(
+            tracing_subscriber::fmt::layer()
+                .compact()
+                .with_writer(std::io::stderr),
+        )
+        .init();
 
     let should_exit = CancellationToken::new();
     let should_loop_exit = should_exit.clone();
@@ -35,7 +49,7 @@ async fn main() -> anyhow::Result<()> {
     if let Some(subcommand) = args.subcommand {
         match subcommand {
             Subcommands::SDRQuery { addr } => {
-                eprintln!(
+                info!(
                     "integer representation of server IP {}: {:?}",
                     addr.ip(),
                     fakeip_to_int(*addr.ip())
@@ -43,7 +57,7 @@ async fn main() -> anyhow::Result<()> {
 
                 let players = client.sdr_playerlist_query(addr).await?;
 
-                eprintln!("{players:#?}");
+                info!("{players:#?}");
 
                 return Ok(());
             }
@@ -58,7 +72,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                 };
 
-                eprintln!("{server_info:#?}");
+                info!("{server_info:#?}");
 
                 let players = match client.players(addr).await {
                     Ok(players) => players,
@@ -67,7 +81,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                 };
 
-                eprintln!("{players:#?}");
+                info!("{players:#?}");
 
                 return Ok(());
             }
@@ -76,9 +90,7 @@ async fn main() -> anyhow::Result<()> {
 
     let server_filter = Filter::new(&args);
 
-    eprintln!("getting server list from API...");
-
-    eprintln!("time: {}", chrono::Utc::now());
+    info!("getting server list from API...");
 
     let serverlist_unfiltered = client
         .serverlist(server_filter.build_api_filter_expression())
@@ -111,7 +123,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut interval = tokio::time::interval(Duration::from_secs(1));
 
-    eprintln!(
+    info!(
         "{num_filtered_servers} servers found after additional filtering (out of {num_unfiltered_servers} returned by the API)"
     );
 
@@ -127,7 +139,7 @@ async fn main() -> anyhow::Result<()> {
                 _ = interval.tick() => {}
             }
 
-            eprintln!(
+            info!(
                 "({} of {}) - fetching players for {} ({}:{})...",
                 index + 1,
                 num_filtered_servers,
@@ -144,7 +156,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         } else {
-            eprintln!(
+            info!(
                 "({} of {}) - not fetching players for {} ({}:{})...",
                 index + 1,
                 num_filtered_servers,
