@@ -269,13 +269,9 @@ impl From<i32> for Region {
 #[derive(Debug, Deserialize, Clone, Serialize)]
 pub(crate) struct Player {
     name: String,
-    // I don't remember why I made this an i32 initially.
-    // According to https://developer.valvesoftware.com/wiki/Server_queries#A2S_PLAYER,
-    // the version of this used by queries directly to a gameserver is a C++ long, which is a signed 32-bit integer.
-    // However, as of 2024-10-11 around 3:30 UTC, I've seen it sometimes be 4294967295
-    // (2^32 - 1, so the maximum value of an UNSIGNED 32-bit integer) and thus fail to deserialize.
-    // I wonder if this is related to casual matchmaking reportedly being broken for some today?
-    score: i32,
+    // https://developer.valvesoftware.com/wiki/Server_queries#A2S_PLAYER says this is a signed 32-bit integer
+    // but I've seen it sometimes be 4294967295 (2^32 - 1, so the maximum value of an UNSIGNED 32-bit integer).
+    score: u32,
     time_played: u32,
 }
 
