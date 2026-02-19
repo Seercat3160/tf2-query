@@ -2,16 +2,15 @@
 
 use std::{
     fmt::{Display, Formatter},
-    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
+    net::{AddrParseError, IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
     str::FromStr,
     sync::LazyLock,
 };
 
-use anyhow::{Context, anyhow};
-
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use thiserror::Error;
 use tracing::{debug, warn};
 use url::Url;
 
@@ -19,32 +18,88 @@ static STEAM_API_URL: LazyLock<Url> = std::sync::LazyLock::new(|| {
     Url::parse("https://api.steampowered.com").expect("Hardcoded URL should be valid")
 });
 
+static USER_AGENT: LazyLock<String> =
+    std::sync::LazyLock::new(|| format!("TF2Query/{}", env!("CARGO_PKG_VERSION")));
+
 pub(crate) struct ApiClient {
     client: reqwest::Client,
     key: String,
 }
 
 impl ApiClient {
-    pub(crate) fn new(key: String) -> anyhow::Result<Self> {
+    pub(crate) async fn new(key: String) -> Result<Self, ClientCreationError> {
         let client = reqwest::ClientBuilder::new()
-            .user_agent(format!("TF2Query/{}", env!("CARGO_PKG_VERSION")))
+            .user_agent(&*USER_AGENT)
             .build()?;
+
+        if !ApiClient::is_key_valid(&key, &client).await {
+            return Err(ClientCreationError::InvalidKey);
+        }
 
         Ok(Self { client, key })
     }
 }
 
+#[derive(Debug, Error)]
+pub enum ClientCreationError {
+    #[error("Invalid Steam API key provided")]
+    InvalidKey,
+    #[error("Could not create HTTP client")]
+    ReqwestError(#[from] reqwest::Error),
+}
+
 impl ApiClient {
+    /// Validate a Steam API key by checking if `ISteamWebAPIUtil/GetSupportedAPIList/v1/` reports any available endpoints.
+    // TODO: specifically validate that the key has access to all the endpoints we use.
+    #[tracing::instrument(level = "debug", ret, skip(client))]
+    async fn is_key_valid(key: &str, client: &reqwest::Client) -> bool {
+        if key.is_empty() {
+            return false;
+        }
+
+        let Ok(req) = client
+            .get(
+                STEAM_API_URL
+                    .join("ISteamWebAPIUtil/GetSupportedAPIList/v1")
+                    .expect("joining constant strings as a URL should succeed"),
+            )
+            .query(&[("key", key)])
+            .build()
+        else {
+            debug!("failed to build request");
+            return false;
+        };
+
+        let Ok(res) = client.execute(req).await else {
+            debug!("failed to execute request");
+            return false;
+        };
+
+        res.json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|x| {
+                x.pointer("/apilist/interfaces")
+                    .and_then(|y| y.as_array())
+                    .map(|y| !y.is_empty())
+            })
+            .is_some_and(|x| x)
+    }
+
     /// Use `IGameServersService/QueryByFakeIP/v1` to get the player list for a server behind Steam Datagram Relay
     pub(crate) async fn sdr_playerlist_query(
         &self,
         addr: SocketAddrV4,
-    ) -> anyhow::Result<Vec<Player>> {
+    ) -> Result<Vec<Player>, ApiError> {
         let fakeip_int = fakeip_to_int(*addr.ip());
 
         let request = self
             .client
-            .get(STEAM_API_URL.join("/IGameServersService/QueryByFakeIP/v1")?)
+            .get(
+                STEAM_API_URL
+                    .join("/IGameServersService/QueryByFakeIP/v1")
+                    .expect("joining constant strings as a URL should succeed"),
+            )
             .query(&[
                 ("key", self.key.clone()),
                 (
@@ -61,13 +116,7 @@ impl ApiClient {
                 ),
             ]);
 
-        let response: serde_json::Value = request
-            .send()
-            .await
-            .context("SDR playerlist query failed")?
-            .json()
-            .await
-            .context("Could not deserialize JSON in SDR playerlist response")?;
+        let response: serde_json::Value = request.send().await?.json().await?;
 
         let players: Vec<Player> = match response.pointer("/response/players_data/players") {
             Some(val) => serde_json::from_value(val.clone())?,
@@ -78,10 +127,14 @@ impl ApiClient {
     }
 
     /// Use `IGameServersService/GetServerList/v1` to get the serverlist using a provided filter expression. There is no additional filtering done beyond what the API returns.
-    pub(crate) async fn serverlist(&self, filter: String) -> anyhow::Result<Vec<RawServer>> {
+    pub(crate) async fn serverlist(&self, filter: String) -> Result<Vec<RawServer>, ApiError> {
         let req = self
             .client
-            .get(STEAM_API_URL.join("/IGameServersService/GetServerList/v1")?)
+            .get(
+                STEAM_API_URL
+                    .join("/IGameServersService/GetServerList/v1")
+                    .expect("joining constant strings as a URL should succeed"),
+            )
             .query(&[
                 ("key", self.key.clone()),
                 (
@@ -98,8 +151,7 @@ impl ApiClient {
             ]);
 
         let req = req.build()?;
-        debug!("requesting: {}", req.url());
-        debug!("filter expression: {filter}");
+        debug!(url = %req.url(), filter, "serverlist API request");
 
         let response: serde_json::Value = self.client.execute(req).await?.json().await?;
 
@@ -117,14 +169,29 @@ impl ApiClient {
             match serde_json::from_value(val.clone()) {
                 Ok(server) => servers.push(server),
                 Err(e) => warn!(
-                    "could not deserialize JSON from server data {}: {e}",
-                    serde_json::to_string_pretty(&val).unwrap_or("{}".into())
+                    json = %serde_json::to_string_pretty(&val).unwrap_or("{}".into()),
+                    error = ?e,
+                    "could not deserialize JSON from server data",
                 ),
             }
         }
 
         Ok(servers)
     }
+}
+
+#[derive(Debug, Error)]
+pub enum ApiError {
+    #[error(transparent)]
+    Reqwest(#[from] reqwest::Error),
+    #[error(transparent)]
+    BadJsonResponse(#[from] serde_json::Error),
+    #[error(transparent)]
+    BadServerAddress(#[from] AddrParseError),
+    #[error(
+        "We can only query players for servers behind Steam Datagram Relay (SDR), which does not include the server at {0}"
+    )]
+    NonSdrAddress(std::net::IpAddr),
 }
 
 /// Convert an IP address to an integer, ready to be passed to Steam's API.
@@ -162,30 +229,27 @@ pub(crate) struct RawServer {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[allow(dead_code)]
 /// The server data we care about, with better types.
-pub(crate) struct Server {
-    pub(crate) ip: IpAddr,
-    pub(crate) port: u16,
-    pub(crate) name: String,
-    region: Region,
-    players: Option<Vec<Player>>,
-    pub(crate) num_players: i32,
-    max_players: i32,
-    bots: i32,
-    map: String,
-    pub(crate) tags: Vec<String>,
-    pub(crate) valve_location: Option<ValveServerLocation>,
+pub struct Server {
+    pub ip: IpAddr,
+    pub port: u16,
+    pub name: String,
+    pub region: Region,
+    pub players: Option<Vec<Player>>,
+    pub num_players: i32,
+    pub max_players: i32,
+    pub bots: i32,
+    pub map: String,
+    pub tags: Vec<String>,
+    pub valve_location: Option<ValveServerLocation>,
 }
 
 impl TryFrom<RawServer> for Server {
-    type Error = anyhow::Error;
+    type Error = ApiError;
 
     fn try_from(server: RawServer) -> Result<Self, Self::Error> {
         Ok(Server {
-            ip: SocketAddr::from_str(&server.addr)
-                .context("Failed to parse server address")?
-                .ip(),
+            ip: SocketAddr::from_str(&server.addr)?.ip(),
             port: server.gameport,
             valve_location: ValveServerLocation::parse(&server.name),
             name: server.name,
@@ -206,7 +270,7 @@ impl TryFrom<RawServer> for Server {
 
 impl Server {
     /// Fetch players for this server, if they haven't already been fetched. Mutates self to update the player data in place.
-    pub(crate) async fn fetch_players(&mut self, client: &ApiClient) -> anyhow::Result<()> {
+    pub(crate) async fn fetch_players(&mut self, client: &ApiClient) -> Result<(), ApiError> {
         if self.players.is_some() {
             return Ok(());
         }
@@ -220,14 +284,10 @@ impl Server {
                     self.players = Some(players);
                     Ok(())
                 } else {
-                    Err(anyhow!(
-                        "We can only query players for servers behind Steam Datagram Relay (SDR)"
-                    ))
+                    Err(ApiError::NonSdrAddress(self.ip))
                 }
             }
-            IpAddr::V6(_) => Err(anyhow!(
-                "IPv6 not supported yet - we can only query players for servers behind Steam Datagram Relay (SDR)"
-            )),
+            IpAddr::V6(_) => Err(ApiError::NonSdrAddress(self.ip)),
         }
     }
 }
@@ -235,7 +295,7 @@ impl Server {
 /// A server region. See https://developer.valvesoftware.com/wiki/Sv_region
 /// Not the same as Valve's matchmaking regions for official servers
 #[derive(Debug, Clone, Serialize)]
-enum Region {
+pub enum Region {
     World,
     USEast,
     USWest,
@@ -245,7 +305,6 @@ enum Region {
     Australia,
     MiddleEast,
     Africa,
-    #[allow(dead_code)]
     Other(i32),
 }
 
@@ -267,12 +326,12 @@ impl From<i32> for Region {
 }
 
 #[derive(Debug, Deserialize, Clone, Serialize)]
-pub(crate) struct Player {
-    name: String,
+pub struct Player {
+    pub name: String,
     // https://developer.valvesoftware.com/wiki/Server_queries#A2S_PLAYER says this is a signed 32-bit integer
     // but I've seen it sometimes be 4294967295 (2^32 - 1, so the maximum value of an UNSIGNED 32-bit integer).
-    score: u32,
-    time_played: u32,
+    pub score: u32,
+    pub time_played: u32,
 }
 
 impl Display for Player {
@@ -295,10 +354,9 @@ static VALVE_SERVER_LOCATION_REGEX: LazyLock<Regex> = std::sync::LazyLock::new(|
     regex::Regex::new(r"^Valve Matchmaking Server \((?:[[:alpha:] ]+ )?srcds[[:digit:]]+-([[:lower:]]{3}[[:digit:][:lower:]-]+) #[[:digit:]]+\)$").expect("hardcoded regex should be valid")
 });
 
-/// Information about an official TF2 server (Valve-hosted) determined by parsing it's name.
-/// Previously a struct with various fields, now just a semantically-meaningful String of the server's airport code.
+/// "Airport code" location of an official TF2 server (Valve-hosted), determined by parsing it's name.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize)]
-pub(crate) struct ValveServerLocation(pub(crate) String);
+pub struct ValveServerLocation(pub(crate) String);
 
 impl ValveServerLocation {
     pub(crate) fn parse(s: impl AsRef<str>) -> Option<Self> {
@@ -323,11 +381,10 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(clippy::unreadable_literal)]
     fn test_fakeip_to_int() {
         assert_eq!(
             fakeip_to_int(Ipv4Addr::LOCALHOST),
-            0b01111111_00000000_00000000_00000001
+            0b0111_1111_0000_0000_0000_0000_0000_0001
         );
     }
 

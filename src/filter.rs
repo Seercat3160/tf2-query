@@ -1,8 +1,8 @@
-use crate::{Args, api::Server};
+use crate::api::Server;
 
 use std::fmt::Write;
 
-pub(crate) struct Filter {
+pub struct Filter {
     only_valve: bool,
     valve_location: Option<String>,
     name_filter_pattern: Option<String>,
@@ -12,55 +12,28 @@ pub(crate) struct Filter {
 }
 
 impl Filter {
-    pub(crate) fn new(args: &Args) -> Self {
-        let mut required_tags = vec![];
-        let mut forbidden_tags = vec![];
-        let mut only_valve: bool = false;
-        let mut min_players: i32 = 0;
-        let mut name_filter: Option<String> = args.filter_name.clone();
-
-        if args.no_mvm {
-            forbidden_tags.push("mvm".into());
-        }
-
-        if args.valve || args.valve_location.is_some() {
-            only_valve = true;
-            required_tags.push("valve".into());
-
-            let name_pattern = format!(
-                "Valve Matchmaking Server (*srcds*-{}* #*)",
-                args.valve_location.clone().unwrap_or_default(), // we postfix with a wildcard anyway, so we want to default to the empty string
-            );
-            name_filter = Some(name_pattern);
-        }
-
-        if args.has_players {
-            min_players = 1;
-        }
-
-        Self {
-            only_valve,
-            valve_location: args.valve_location.clone(),
-            name_filter_pattern: name_filter,
-            required_tags,
-            forbidden_tags,
-            min_players,
-        }
-    }
-
     // Info available at https://github.com/MegaAntiCheat/masterbase/blob/64ada88eff0d398ae229a44db2eeb8a31f00b126/masterbase/steam.py#L51 and https://developer.valvesoftware.com/wiki/Master_Server_Query_Protocol#Filter
     // Neither can be trusted to be correct, but it's a good starting point.
+    // TODO: consider making a typed representation of the filter DSL (to use rather than doing string concat here to build the filter)
     pub(crate) fn build_api_filter_expression(&self) -> String {
         let mut filter_string = "\\appid\\440".to_string();
 
-        if self.only_valve {
+        if self.only_valve || self.valve_location.is_some() {
             let _ = write!(filter_string, "\\secure\\1\\linux\\1");
+            // assumption: if multiple name_match operators are specified, they will all be used.
+            let _ = write!(
+                filter_string,
+                "\\name_match\\Valve Matchmaking Server (*srcds*-{loc}* #*)",
+                loc = self.valve_location.as_ref().unwrap_or(&String::new())
+            );
         }
+
         if self.min_players > 0 {
             filter_string += "\\empty\\1"; // counter-intuitively, this excludes empty servers
         }
 
         if !self.forbidden_tags.is_empty() {
+            // "nor" takes an argument that "Should specify the total size of the operand(s), meaning the number of \op\operand pairs" (according to the error message I got from the API in the x-error-message header).
             // masterbase code says gametype matches servers with *any* of the given tags, so negating that means none of them (this contradicts the wiki) // TODO: test this
             let _ = write!(
                 filter_string,
@@ -69,7 +42,6 @@ impl Filter {
             );
         }
 
-        // "nor" takes an argument that "Should specify the total size of the operand(s), meaning the number of \op\operand pairs" (according to the error message I got from the API in the x-error-message header)
         if !self.required_tags.is_empty() {
             // TODO: test whether gametype requires matching all of the given tags, or just any
             let _ = write!(
@@ -80,20 +52,20 @@ impl Filter {
         }
 
         if let Some(pattern) = &self.name_filter_pattern {
-            // name_match
             let _ = write!(filter_string, "\\name_match\\{pattern}");
         }
 
         filter_string
     }
 
-    /// Determine whether or not a given server matches the filter. Assumes the server was returned from an API call whether the filter expression built from this filter was used (i.e. some filtering may have already been done and need not be repeated).
+    /// Determine whether or not a given server matches the filter.
+    /// Assumes the server was returned from an API call where the filter expression built from this filter was used (i.e. some filtering may have already been done and need not be repeated).
     pub(crate) fn filter_server(&self, server: &Server) -> bool {
         if server.num_players < self.min_players {
             return false;
         }
 
-        // These tag filters should be improved, they might be slow
+        // TODO: is this simple approach too slow?
         for tag in &self.forbidden_tags {
             if server.tags.contains(tag) {
                 return false;
@@ -120,5 +92,84 @@ impl Filter {
         }
 
         true
+    }
+}
+
+pub struct FilterBuilder {
+    only_valve: bool,
+    valve_location: Option<String>,
+    name_filter_pattern: Option<String>,
+    required_tags: Vec<String>,
+    forbidden_tags: Vec<String>,
+    min_players: i32,
+}
+
+impl FilterBuilder {
+    #[must_use]
+    pub fn build(self) -> Filter {
+        Filter {
+            only_valve: self.only_valve,
+            valve_location: self.valve_location,
+            name_filter_pattern: self.name_filter_pattern,
+            required_tags: self.required_tags,
+            forbidden_tags: self.forbidden_tags,
+            min_players: self.min_players,
+        }
+    }
+
+    #[must_use]
+    pub fn only_valve(mut self, only_valve: bool) -> Self {
+        self.only_valve = only_valve;
+        self
+    }
+
+    #[must_use]
+    pub fn valve_location(mut self, valve_location: Option<String>) -> Self {
+        self.valve_location = valve_location;
+        self
+    }
+
+    #[must_use]
+    pub fn name_filter_pattern(mut self, name_filter_pattern: Option<String>) -> Self {
+        self.name_filter_pattern = name_filter_pattern;
+        self
+    }
+
+    #[must_use]
+    pub fn required_tags(mut self, required_tags: Vec<String>) -> Self {
+        self.required_tags = required_tags;
+        self
+    }
+
+    #[must_use]
+    pub fn forbidden_tags(mut self, forbidden_tags: Vec<String>) -> Self {
+        self.forbidden_tags = forbidden_tags;
+        self
+    }
+
+    #[must_use]
+    pub fn min_players(mut self, min_players: i32) -> Self {
+        self.min_players = min_players;
+        self
+    }
+}
+
+impl FilterBuilder {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            only_valve: false,
+            valve_location: None,
+            name_filter_pattern: None,
+            required_tags: vec![],
+            forbidden_tags: vec![],
+            min_players: 0,
+        }
+    }
+}
+
+impl Default for FilterBuilder {
+    fn default() -> Self {
+        FilterBuilder::new()
     }
 }
